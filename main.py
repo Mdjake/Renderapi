@@ -1,10 +1,12 @@
 import os
 import math
-import gc  # <--- Add this import at the top of your file
+import gc
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import Response
 import duckdb
 
 app = FastAPI(title="Simple Search API")
+
 MASTER_KEY = "my_secret_key_123"
 BUCKET_PATH = "hf://buckets/secrethure/aadhar-family-bucket/idx_aadhar.*.parquet"
 
@@ -23,6 +25,16 @@ def clean_records(df):
         out.append(clean)
     return out
 
+# ---------------- HEALTH CHECKS (For Render) ----------------
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root():
+    return {"status": "ONLINE", "message": "Use /search?field=...&value=...&key=..."}
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=200)
+
+# ---------------- PUBLIC SEARCH ----------------
 @app.get("/search")
 async def dynamic_search(
     field: str = Query(...),
@@ -58,8 +70,7 @@ async def dynamic_search(
         raise HTTPException(status_code=500, detail=f"QUERY_FAILED: {str(e)}")
         
     finally:
-        # --- FORCE MEMORY CLEANUP ---
         if con is not None:
             con.close()
-        del con  # Delete the connection object
-        gc.collect()  # Force Python to clean up RAM immediately
+        del con
+        gc.collect()
