@@ -1,19 +1,14 @@
 import os
 import math
+import gc  # <--- Add this import at the top of your file
 from fastapi import FastAPI, HTTPException, Query
 import duckdb
 
 app = FastAPI(title="Simple Search API")
-
-# ---------------- YOUR SINGLE KEY ----------------
-MASTER_KEY = "my_secret_key_123"  # Change this to your desired secret key
-
-# Target the 7 files in the bucket
+MASTER_KEY = "my_secret_key_123"
 BUCKET_PATH = "hf://buckets/secrethure/aadhar-family-bucket/idx_aadhar.*.parquet"
 
-# ---------------- HELPERS ----------------
 def clean_records(df):
-    """Cleans pandas NaN and numpy types for JSON serialization."""
     records = df.to_dict(orient="records")
     out = []
     for r in records:
@@ -21,40 +16,33 @@ def clean_records(df):
         for k, v in r.items():
             if isinstance(v, float) and math.isnan(v):
                 clean[k] = None
-            elif hasattr(v, "item"):  # numpy scalar -> python native
+            elif hasattr(v, "item"):
                 clean[k] = v.item()
             else:
                 clean[k] = v
         out.append(clean)
     return out
 
-# ---------------- PUBLIC SEARCH ----------------
 @app.get("/search")
 async def dynamic_search(
-    field: str = Query(..., description="Column to search (e.g., aadharNumber, phoneNumber)"),
-    value: str = Query(..., description="The value to search for"),
-    key: str = Query(..., description="Your API key"),
+    field: str = Query(...),
+    value: str = Query(...),
+    key: str = Query(...),
 ):
     if key != MASTER_KEY:
-        raise HTTPException(status_code=401, detail="ACCESS_DENIED: Invalid API key")
+        raise HTTPException(status_code=401, detail="ACCESS_DENIED")
 
-    allowed_fields = [
-        "name", "fathersName", "phoneNumber", "aadharNumber", 
-        "otherNumber", "address", "district", "pincode", 
-        "state", "town", "source"
-    ]
-    
+    allowed_fields = ["name", "fathersName", "phoneNumber", "aadharNumber", "otherNumber", "address", "district", "pincode", "state", "town", "source"]
     if field not in allowed_fields:
-        raise HTTPException(status_code=400, detail="Invalid field name.")
+        raise HTTPException(status_code=400, detail="Invalid field")
 
     con = None
     try:
-        # Render has a normal home directory, but /tmp is still safe for temp files
         con = duckdb.connect()
+        con.execute("SET home_directory = '/tmp';")
         con.execute("INSTALL httpfs;")
         con.execute("LOAD httpfs;")
         
-        # Using ILIKE for partial/case-insensitive matching (except for exact IDs)
         if field == "aadharNumber":
             query = f"SELECT * FROM read_parquet('{BUCKET_PATH}') WHERE {field} = ? LIMIT 10"
             df = con.execute(query, [value]).fetchdf()
@@ -63,16 +51,15 @@ async def dynamic_search(
             df = con.execute(query, [f"%{value}%"]).fetchdf()
         
         if df.empty:
-            return {"message": "NO_DATA_FOUND", "field": field, "value": value}
+            return {"message": "NO_DATA_FOUND"}
         return clean_records(df)
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"QUERY_FAILED: {str(e)}")
         
     finally:
+        # --- FORCE MEMORY CLEANUP ---
         if con is not None:
             con.close()
-
-@app.get("/")
-async def root():
-    return {"status": "ONLINE", "message": "Use /search?field=...&value=...&key=..."}
+        del con  # Delete the connection object
+        gc.collect()  # Force Python to clean up RAM immediately
